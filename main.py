@@ -117,8 +117,18 @@ def train_fhe_model(args):
     print("=" * 50)
 
     if args.save_model:
-        save_path = f"fhe_mnist_model_{time.strftime('%Y%m%d_%H%M%S')}.pt"
-        print(f"\nSaving model to {save_path}...")
+        import json
+        import os
+        from datetime import datetime
+        
+        # Create .models directory if it doesn't exist
+        os.makedirs(".models", exist_ok=True)
+        
+        model_id = f"fhe_mnist_model_{time.strftime('%Y%m%d_%H%M%S')}"
+        model_path = f".models/{model_id}.pt"
+        stats_path = f".models/{model_id}_stats.json"
+        
+        print(f"\nSaving model to {model_path}...")
 
         checkpoint = {
             "model_state": model.get_parameters(),
@@ -132,8 +142,56 @@ def train_fhe_model(args):
             "args": vars(args),
         }
 
-        torch.save(checkpoint, save_path)
-        print("Model saved successfully!")
+        torch.save(checkpoint, model_path)
+        
+        # Create comprehensive stats file
+        stats = {
+            "model_id": model_id,
+            "created_at": datetime.now().isoformat() + "Z",
+            "model_file": f"{model_id}.pt",
+            "training_stats": {
+                "final_accuracy": float(training_history["test_accuracy"][-1]),
+                "final_loss": float(training_history["train_loss"][-1]),
+                "epochs": len(training_history["train_loss"]),
+                "total_training_time_seconds": float(sum(training_history["epoch_times"])),
+                "average_epoch_time_seconds": float(sum(training_history["epoch_times"]) / len(training_history["epoch_times"]))
+            },
+            "model_config": {
+                "architecture": "FHE-MLP",
+                "input_dim": 784,
+                "hidden_dims": args.hidden_dims,
+                "num_classes": 10,
+                "activation": "linear",
+                "use_polynomial_activation": False
+            },
+            "training_config": {
+                "learning_rate": args.learning_rate,
+                "batch_size": args.batch_size,
+                "encrypted_batch_size": args.encrypted_batch_size if hasattr(args, 'encrypted_batch_size') else None,
+                "optimizer": "SGD",
+                "loss_function": "CrossEntropyLoss",
+                "encrypted_training": args.use_encrypted if hasattr(args, 'use_encrypted') else False
+            },
+            "dataset": {
+                "name": "MNIST",
+                "train_samples": 60000,
+                "test_samples": 10000,
+                "input_shape": [28, 28],
+                "num_classes": 10
+            },
+            "performance_metrics": {
+                "test_accuracy": float(training_history["test_accuracy"][-1]),
+                "convergence_epoch": len(training_history["train_loss"]),
+                "fhe_compatible": True
+            },
+            "notes": "FHE-compatible model with linear activations for MNIST classification."
+        }
+        
+        with open(stats_path, 'w') as f:
+            json.dump(stats, f, indent=2)
+        
+        print(f"Model saved successfully to {model_path}")
+        print(f"Stats saved to {stats_path}")
 
     if args.test_encrypted_inference:
         print("\n" + "=" * 50)
