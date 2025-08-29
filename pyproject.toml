@@ -1,0 +1,29 @@
+[project]
+name = "fheml"
+version = "0.1.0"
+description = "Default template for PDM package"
+authors = [
+    {name = "Ondrej Zoder", email = "ondrej.zoder@uipath.com"},
+]
+dependencies = [
+    "tenseal>=0.3.16",
+    "torch>=2.8.0",
+    "torchvision>=0.23.0",
+    "numpy>=2.2.6",
+    "scikit-learn>=1.7.1",
+    "matplotlib>=3.10.5",
+    "tqdm>=4.67.1",
+]
+requires-python = "==3.10.*"
+readme = "README.md"
+license = {text = "MIT"}
+
+
+[tool.pdm]
+distribution = false
+
+[tool.pdm.dev-dependencies]
+dev = [
+    "pytest>=8.4.1",
+    "pytest-cov>=6.2.1",
+]
