@@ -22,6 +22,11 @@ license = {text = "MIT"}
 [tool.pdm]
 distribution = false
 
+[tool.pdm.scripts]
+train = {env = {PYTHONPATH = "."}, cmd = "python main.py"}
+test = {env = {PYTHONPATH = "."}, cmd = "python -m pytest tests/"}
+test-basic = {env = {PYTHONPATH = "."}, cmd = "python tests/test_basic.py"}
+
 [tool.pdm.dev-dependencies]
 dev = [
     "pytest>=8.4.1",

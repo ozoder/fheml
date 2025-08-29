@@ -100,17 +100,17 @@ pdm shell
 
 #### 1. Basic Training
 ```bash
-python main.py --epochs 3 --hidden-dims 64 --learning-rate 0.01
+pdm run train --epochs 3 --hidden-dims 64 --learning-rate 0.01
 ```
 
 #### 2. Encrypted Training
 ```bash
-python main.py --use-encrypted --encrypted-epochs 2 --encrypted-samples 100 --save-model
+pdm run train --use-encrypted --encrypted-epochs 2 --encrypted-samples 100 --save-model
 ```
 
 #### 3. Full Pipeline with Encrypted Inference
 ```bash
-python main.py --use-encrypted --encrypted-samples 200 --test-encrypted-inference --save-model
+pdm run train --use-encrypted --encrypted-samples 200 --test-encrypted-inference --save-model
 ```
 
 ### Command Line Options
@@ -217,10 +217,10 @@ Run the test suite to verify functionality:
 
 ```bash
 # Basic functionality test
-python tests/test_basic.py
+pdm run test-basic
 
 # Full test suite
-python -m pytest tests/
+pdm run test
 ```
 
 The basic test covers:
