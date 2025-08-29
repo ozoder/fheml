@@ -24,6 +24,8 @@ distribution = false
 
 [tool.pdm.scripts]
 train = {env = {PYTHONPATH = "."}, cmd = "python main.py"}
+train-production = {env = {PYTHONPATH = "."}, cmd = "python main_production.py"}
+demo-bootstrapping = {env = {PYTHONPATH = "."}, cmd = "python bootstrapping_fhe.py"}
 test = {env = {PYTHONPATH = "."}, cmd = "python -m pytest tests/"}
 test-basic = {env = {PYTHONPATH = "."}, cmd = "python tests/test_basic.py"}
 
