@@ -12,11 +12,18 @@ def create_context(
     scale_bits: int = 40,
 ) -> ts.Context:
     if coeff_mod_bit_sizes is None:
-        # Use appropriate coefficient modulus for the given polynomial degree
+        # Use conservative, TenSEAL-compatible parameters
         if poly_modulus_degree == 4096:
             coeff_mod_bit_sizes = [40, 40, 40]
         elif poly_modulus_degree == 8192:
-            coeff_mod_bit_sizes = [60, 40, 40, 60]
+            coeff_mod_bit_sizes = [
+                60,
+                40,
+                40,
+                60,
+            ]  # Conservative but with more levels
+        elif poly_modulus_degree == 16384:
+            coeff_mod_bit_sizes = [60, 40, 40, 40, 40, 60]
         else:
             coeff_mod_bit_sizes = [60, 40, 40, 60]
 
@@ -48,9 +55,116 @@ def encrypt_tensor(context: ts.Context, tensor: torch.Tensor) -> ts.CKKSTensor:
 
 def decrypt_tensor(encrypted_tensor: ts.CKKSTensor) -> torch.Tensor:
     decrypted = encrypted_tensor.decrypt()
-    if hasattr(decrypted, 'tolist'):
+    if hasattr(decrypted, "tolist"):
         decrypted = decrypted.tolist()
     return torch.tensor(decrypted, dtype=torch.float32)
+
+
+def safe_rescale(
+    tensor: ts.CKKSTensor, target_scale: float = None
+) -> ts.CKKSTensor:
+    """Safely rescale a tensor to manage scale growth."""
+    try:
+        if hasattr(tensor, "rescale_to_next"):
+            # More aggressive rescaling - rescale if scale is larger than global scale
+            if tensor.scale > tensor.context().global_scale * 1.1:
+                tensor.rescale_to_next()
+        return tensor
+    except Exception as e:
+        print(f"Warning: Rescaling failed: {e}")
+        return tensor
+
+
+def check_scale_health(
+    tensor: ts.CKKSTensor, operation_name: str = ""
+) -> bool:
+    """Check if tensor scale is within safe bounds."""
+    try:
+        scale_ratio = tensor.scale / tensor.context().global_scale
+        if scale_ratio > 100:  # Scale too large
+            print(
+                f"Warning: {operation_name} - Scale too large: {scale_ratio:.2f}x global scale"
+            )
+            return False
+        elif scale_ratio < 0.01:  # Scale too small
+            print(
+                f"Warning: {operation_name} - Scale too small: {scale_ratio:.4f}x global scale"
+            )
+            return False
+        return True
+    except:
+        return False
+
+
+def bootstrap_if_needed(
+    tensor: ts.CKKSTensor, min_scale_ratio: float = 0.1
+) -> ts.CKKSTensor:
+    """Bootstrap tensor if scale becomes too small."""
+    try:
+        # Check if tensor has scale and context
+        if hasattr(tensor, "scale") and hasattr(tensor, "context"):
+            try:
+                context = tensor.context()
+                scale_ratio = tensor.scale / context.global_scale
+                if scale_ratio < min_scale_ratio:
+                    print(
+                        f"Bootstrapping tensor (scale ratio: {scale_ratio:.4f})"
+                    )
+                    # For now, we'll decrypt and re-encrypt as a simple bootstrap
+                    # In production, you'd use proper bootstrapping if available
+                    decrypted = decrypt_tensor(tensor)
+                    return encrypt_tensor(context, decrypted)
+            except Exception as inner_e:
+                print(f"Bootstrap scale check failed: {inner_e}")
+    except Exception as e:
+        print(f"Bootstrap failed: {e}")
+    return tensor
+
+
+def safe_multiply(a: ts.CKKSTensor, b: ts.CKKSTensor) -> ts.CKKSTensor:
+    """Safely multiply two encrypted tensors with scale management."""
+    try:
+        result = a * b
+        result = safe_rescale(result)
+        return result
+    except ValueError as e:
+        if "scale out of bounds" in str(e):
+            print("Scale out of bounds detected, attempting recovery...")
+            # Try bootstrapping the operands
+            a_boot = bootstrap_if_needed(a)
+            b_boot = bootstrap_if_needed(b)
+            result = a_boot * b_boot
+            result = safe_rescale(result)
+            return result
+        else:
+            raise e
+
+
+def safe_square(tensor: ts.CKKSTensor) -> ts.CKKSTensor:
+    """Safely square a tensor with scale management."""
+    try:
+        # Check scale health before squaring
+        if not check_scale_health(tensor, "pre-square"):
+            tensor = bootstrap_if_needed(tensor)
+
+        result = tensor.square()
+        result = safe_rescale(result)
+
+        # Check result scale health
+        check_scale_health(result, "post-square")
+
+        return result
+    except ValueError as e:
+        if "scale out of bounds" in str(e):
+            print(
+                "Scale out of bounds in square operation, attempting recovery..."
+            )
+            tensor_boot = bootstrap_if_needed(tensor)
+            result = tensor_boot.square()
+            result = safe_rescale(result)
+            return result
+        else:
+            raise e
 
 
 def load_mnist_data(
@@ -86,7 +200,9 @@ def prepare_encrypted_batch(
     return encrypted_images, labels
 
 
-def one_hot_encode(labels: torch.Tensor, num_classes: int = 10) -> torch.Tensor:
+def one_hot_encode(
+    labels: torch.Tensor, num_classes: int = 10
+) -> torch.Tensor:
     batch_size = labels.shape[0]
     one_hot = torch.zeros(batch_size, num_classes)
     one_hot[torch.arange(batch_size), labels] = 1

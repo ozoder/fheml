@@ -4,6 +4,8 @@ import tenseal as ts
 import torch
 import torch.nn as nn
 
+from utils import safe_rescale, check_scale_health, safe_square
+
 
 class FHELinearLayer:
     def __init__(self, in_features: int, out_features: int):
@@ -13,6 +15,9 @@ class FHELinearLayer:
         self.bias = torch.zeros(out_features)
 
     def forward_encrypted(self, x: ts.CKKSTensor) -> ts.CKKSTensor:
+        # Check input scale health
+        check_scale_health(x, f"linear_layer_input_{self.out_features}")
+        
         bias_plain = self.bias.numpy().tolist()
 
         # For vector x matrix multiplication, we need to transpose
@@ -21,10 +26,15 @@ class FHELinearLayer:
         weight_t_plain = self.weight.t().numpy().tolist()
         
         result = x.dot(weight_t_plain)
-        # Rescale to manage noise growth
-        if hasattr(result, 'rescale_to_next'):
-            result.rescale_to_next()
+        
+        # Apply safe rescaling
+        result = safe_rescale(result)
+        check_scale_health(result, f"linear_layer_after_dot_{self.out_features}")
+        
         result = result + bias_plain
+        
+        # Final scale check
+        check_scale_health(result, f"linear_layer_output_{self.out_features}")
 
         return result
 
@@ -51,11 +61,23 @@ class FHEPolynomialActivation:
             return torch.relu(x)
         else:
             # FHE polynomial approximation: 0.5 * x + 0.25 * x^2
-            x_squared = x.square()
-            if hasattr(x_squared, 'rescale_to_next'):
-                x_squared.rescale_to_next()
+            check_scale_health(x, "poly_activation_input")
             
-            result = x * 0.5 + x_squared * 0.25
+            # Use safe square operation
+            x_squared = safe_square(x)
+            check_scale_health(x_squared, "poly_activation_squared")
+            
+            # Compute linear and quadratic terms
+            linear_term = x * 0.5
+            quadratic_term = x_squared * 0.25
+            
+            # Apply safe rescaling to terms
+            linear_term = safe_rescale(linear_term)
+            quadratic_term = safe_rescale(quadratic_term)
+            
+            result = linear_term + quadratic_term
+            check_scale_health(result, "poly_activation_output")
+            
             return result
 
 
