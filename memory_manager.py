@@ -14,9 +14,9 @@ class GracefulMemoryManager:
     """Manages memory usage gracefully without process termination."""
 
     def __init__(self,
-                 memory_limit_gb: float = 25.0,  # Conservative limit for stable FHE operations
-                 warning_threshold: float = 0.8,
-                 critical_threshold: float = 0.9):
+                 memory_limit_gb: float = 200.0,  # High-resource limit for 90%+ accuracy training
+                 warning_threshold: float = 0.7,
+                 critical_threshold: float = 0.85):
         self.memory_limit_bytes = int(memory_limit_gb * 1024 * 1024 * 1024)
         self.warning_threshold = warning_threshold
         self.critical_threshold = critical_threshold
@@ -59,26 +59,26 @@ class GracefulMemoryManager:
         memory_mb = memory_bytes // (1024 * 1024)
 
         if percentage >= self.critical_threshold:
-            # CRITICAL: Reduce but maintain architecture for high accuracy
+            # CRITICAL: Moderate reduction while preserving deep architecture
             self.degradation_level = 2
             return {
-                "batch_size": 2,
-                "max_samples": min(200, max(100, int(300 * (1.2 - percentage)))),  # Minimum 100 samples
-                "hidden_dims": [128, 64],  # Maintain reasonable depth
+                "batch_size": 4,
+                "max_samples": min(2000, max(500, int(3000 * (1.1 - percentage)))),  # Minimum 500 samples
+                "hidden_dims": [512, 256, 128],  # Maintain deep architecture for accuracy
                 "enable_checkpointing": True,
                 "clear_cache_frequency": 1,  # Clear after every batch
-                "message": f"CRITICAL: {memory_mb}MB used. Reduced architecture for stability."
+                "message": f"CRITICAL: {memory_mb}MB used. Moderate reduction for high-resource training."
             }
         elif percentage >= self.warning_threshold:
-            # WARNING: Moderate reduction, maintain high-accuracy architecture
+            # WARNING: Light reduction, preserve ultra-deep architecture
             self.degradation_level = 1
             return {
-                "batch_size": 3,
-                "max_samples": min(300, max(150, int(500 * (1.1 - percentage)))),  # Minimum 150 samples
-                "hidden_dims": [256, 128],  # Maintain depth for accuracy
+                "batch_size": 6,
+                "max_samples": min(4000, max(1000, int(5000 * (1.05 - percentage)))),  # Minimum 1000 samples
+                "hidden_dims": [1024, 512, 256],  # Preserve most of the depth
                 "enable_checkpointing": True,
                 "clear_cache_frequency": 2,
-                "message": f"WARNING: {memory_mb}MB used. Moderate reduction for stability."
+                "message": f"WARNING: {memory_mb}GB used. Light reduction for optimal performance."
             }
         else:
             # NORMAL: No reduction needed
@@ -130,14 +130,14 @@ def memory_aware(memory_manager: GracefulMemoryManager):
 class AdaptiveTrainingManager:
     """Manages FHE training with adaptive memory management."""
 
-    def __init__(self, memory_limit_gb: float = 25.0):
+    def __init__(self, memory_limit_gb: float = 200.0):
         self.memory_manager = GracefulMemoryManager(memory_limit_gb)
         self.checkpoints = []
         self.adaptive_params = {
-            "batch_size": 5,
-            "max_train_samples": 100,  # Proven working size
-            "max_test_samples": 40,
-            "hidden_dims": [48]  # Proven stable architecture
+            "batch_size": 8,
+            "max_train_samples": 5000,  # Large-scale training for 90%+ accuracy
+            "max_test_samples": 1000,
+            "hidden_dims": [1024, 512, 256, 128]  # Deep architecture for high accuracy
         }
 
     def adapt_parameters(self) -> dict:

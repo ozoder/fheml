@@ -1,4 +1,5 @@
 import logging
+import os
 import time
 from datetime import datetime
 from typing import List, Optional, Tuple
@@ -406,6 +407,8 @@ def train_production_fhe_model(
     max_test_samples: int = 20,
     batch_size: int = 4,
     memory_limit_gb: float = 25.0,
+    enable_checkpointing: bool = False,
+    checkpoint_every: int = 5,
 ):
     """Train a model entirely on encrypted data with graceful memory management.
 
@@ -511,6 +514,27 @@ def train_production_fhe_model(
         print(f"  Test Accuracy: {test_accuracy:.2%}")
         print(f"  Test Loss: {test_loss:.4f}")
         print(f"  Time: {epoch_time:.1f}s")
+
+        # Checkpointing for long training runs
+        if enable_checkpointing and (epoch + 1) % checkpoint_every == 0:
+            checkpoint_dir = ".checkpoints"
+            os.makedirs(checkpoint_dir, exist_ok=True)
+
+            checkpoint_path = os.path.join(checkpoint_dir, f"fhe_model_epoch_{epoch + 1}.pt")
+
+            # Save model parameters and training state
+            checkpoint_data = {
+                'epoch': epoch + 1,
+                'model_parameters': model.get_parameters(),
+                'training_history': training_history,
+                'test_accuracy': test_accuracy,
+                'learning_rate': learning_rate,
+            }
+
+            import torch
+            torch.save(checkpoint_data, checkpoint_path)
+            print(f"  ✅ Checkpoint saved: {checkpoint_path}")
+            print(f"  📊 Best accuracy so far: {max(training_history['test_accuracy']):.2%}")
 
     print("\n" + "=" * 60)
     print("PRODUCTION TRAINING COMPLETE")

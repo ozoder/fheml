@@ -291,6 +291,25 @@ def main():
         "--max-test-samples", type=int, default=20, help="Maximum test samples"
     )
 
+    # High-resource training configuration
+    parser.add_argument(
+        "--memory-limit-gb",
+        type=float,
+        default=25.0,
+        help="Memory limit in GB for graceful management",
+    )
+    parser.add_argument(
+        "--enable-checkpointing",
+        action="store_true",
+        help="Enable model checkpointing for long training runs",
+    )
+    parser.add_argument(
+        "--checkpoint-every",
+        type=int,
+        default=5,
+        help="Save checkpoint every N epochs",
+    )
+
     # FHE configuration
     parser.add_argument(
         "--poly-modulus-degree",
@@ -365,7 +384,9 @@ def main():
         max_train_samples=args.max_train_samples,
         max_test_samples=args.max_test_samples,
         batch_size=args.batch_size,
-        memory_limit_gb=25.0,  # 25GB memory limit - conservative for stable FHE operations
+        memory_limit_gb=args.memory_limit_gb,
+        enable_checkpointing=args.enable_checkpointing,
+        checkpoint_every=args.checkpoint_every,
     )
 
     # Save model if requested
