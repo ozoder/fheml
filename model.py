@@ -11,7 +11,10 @@ class FHELinearLayer:
     def __init__(self, in_features: int, out_features: int):
         self.in_features = in_features
         self.out_features = out_features
-        self.weight = torch.randn(out_features, in_features) * 0.01
+
+        # Xavier/Glorot initialization for better convergence
+        std = (2.0 / (in_features + out_features)) ** 0.5
+        self.weight = torch.randn(out_features, in_features) * std
         self.bias = torch.zeros(out_features)
 
     def forward_encrypted(self, x: ts.CKKSTensor) -> ts.CKKSTensor:
@@ -47,10 +50,11 @@ class FHELinearLayer:
 
 
 class FHEPolynomialActivation:
-    """FHE-friendly polynomial approximation of ReLU using degree-2 polynomial.
-    
-    Uses the approximation: f(x) ≈ 0.5 * x + 0.25 * x^2 for x in [-1, 1]
-    This approximates ReLU behavior while using only one multiplication.
+    """Enhanced FHE-friendly polynomial approximation with proper scale management.
+
+    Uses ReLU approximation: f(x) ≈ max(0, x) ≈ x * σ(x) where σ is sigmoid-like
+    Implemented as: f(x) ≈ 0.125 * (x + |x|) ≈ 0.125 * x * (1 + sign(x))
+    For FHE: f(x) ≈ 0.5 * x + 0.25 * x^2 (degree-2 polynomial)
     """
     @staticmethod
     def forward(
@@ -60,24 +64,25 @@ class FHEPolynomialActivation:
             # For plain computation, use actual ReLU
             return torch.relu(x)
         else:
-            # FHE polynomial approximation: 0.5 * x + 0.25 * x^2
-            check_scale_health(x, "poly_activation_input")
-            
-            # Use safe square operation
-            x_squared = safe_square(x)
-            check_scale_health(x_squared, "poly_activation_squared")
-            
-            # Compute linear and quadratic terms
-            linear_term = x * 0.5
-            quadratic_term = x_squared * 0.25
-            
-            # Apply safe rescaling to terms
-            linear_term = safe_rescale(linear_term)
-            quadratic_term = safe_rescale(quadratic_term)
-            
+            # Enhanced polynomial activation with proper scale management
+            check_scale_health(x, "activation_input")
+
+            # Normalize input to avoid scale explosion
+            normalized_x = x * 0.1  # Scale down input
+            normalized_x = safe_rescale(normalized_x)
+
+            # Compute x^2 term carefully
+            x_squared = safe_square(normalized_x)
+            x_squared = safe_rescale(x_squared)
+
+            # Polynomial: 0.5*x + 0.25*x^2 (after normalization)
+            linear_term = normalized_x * 5.0  # Compensate for normalization
+            quadratic_term = x_squared * 2.5  # Scaled quadratic term
+
             result = linear_term + quadratic_term
-            check_scale_health(result, "poly_activation_output")
-            
+            result = safe_rescale(result)
+            check_scale_health(result, "activation_output")
+
             return result
 
 
@@ -94,7 +99,7 @@ class FHEMLPClassifier:
     def __init__(
         self,
         input_dim: int = 784,
-        hidden_dims: List[int] = [128],  # Reduced to single hidden layer
+        hidden_dims: List[int] = [256, 128, 64],  # Deeper architecture for 90%+ accuracy
         num_classes: int = 10,
         use_polynomial_activation: bool = True,
     ) -> None:

@@ -12,35 +12,56 @@ def create_context(
     scale_bits: int = 40,
 ) -> ts.Context:
     if coeff_mod_bit_sizes is None:
-        # Use conservative, TenSEAL-compatible parameters
+        # Use conservative, TenSEAL-compatible parameters with more levels for FHE operations
         if poly_modulus_degree == 4096:
-            coeff_mod_bit_sizes = [40, 40, 40]
+            coeff_mod_bit_sizes = [50, 40, 40, 50]  # More levels for 4096
         elif poly_modulus_degree == 8192:
             coeff_mod_bit_sizes = [
                 60,
                 40,
                 40,
+                40,
+                40,
                 60,
-            ]  # Conservative but with more levels
+            ]  # More levels for scale management
         elif poly_modulus_degree == 16384:
-            coeff_mod_bit_sizes = [60, 40, 40, 40, 40, 60]
+            coeff_mod_bit_sizes = [60, 40, 40, 40, 40, 40, 40, 60]
         else:
-            coeff_mod_bit_sizes = [60, 40, 40, 60]
+            coeff_mod_bit_sizes = [60, 40, 40, 40, 60]  # Default with more levels
 
     # Ensure valid polynomial modulus degree
     if poly_modulus_degree < 8192:
         poly_modulus_degree = 8192
 
-    context = ts.context(
-        ts.SCHEME_TYPE.CKKS,
-        poly_modulus_degree=poly_modulus_degree,
-        coeff_mod_bit_sizes=coeff_mod_bit_sizes,
-    )
+    print(f"Creating FHE context: poly_degree={poly_modulus_degree}, coeff_bits={coeff_mod_bit_sizes}, scale_bits={scale_bits}")
 
-    context.global_scale = 2**scale_bits
-    context.generate_galois_keys()
+    try:
+        context = ts.context(
+            ts.SCHEME_TYPE.CKKS,
+            poly_modulus_degree=poly_modulus_degree,
+            coeff_mod_bit_sizes=coeff_mod_bit_sizes,
+        )
 
-    return context
+        context.global_scale = 2**scale_bits
+        context.generate_galois_keys()
+
+        print(f"Successfully created FHE context with global scale: {context.global_scale}")
+        return context
+
+    except Exception as e:
+        print(f"Error creating FHE context: {e}")
+        # Fallback to simpler parameters
+        print("Trying fallback parameters...")
+        fallback_coeff_mod_bit_sizes = [60, 40, 40, 60]
+        context = ts.context(
+            ts.SCHEME_TYPE.CKKS,
+            poly_modulus_degree=8192,
+            coeff_mod_bit_sizes=fallback_coeff_mod_bit_sizes,
+        )
+        context.global_scale = 2**scale_bits
+        context.generate_galois_keys()
+        print(f"Fallback context created with global scale: {context.global_scale}")
+        return context
 
 
 def encrypt_tensor(context: ts.Context, tensor: torch.Tensor) -> ts.CKKSTensor:
@@ -67,7 +88,9 @@ def safe_rescale(
     try:
         if hasattr(tensor, "rescale_to_next"):
             # More aggressive rescaling - rescale if scale is larger than global scale
-            if tensor.scale > tensor.context().global_scale * 1.1:
+            scale_ratio = tensor.scale() / tensor.context().global_scale
+            if scale_ratio > 2.0:  # Rescale if scale is much larger than global
+                print(f"Rescaling tensor: scale ratio {scale_ratio:.3f}")
                 tensor.rescale_to_next()
         return tensor
     except Exception as e:
@@ -80,19 +103,24 @@ def check_scale_health(
 ) -> bool:
     """Check if tensor scale is within safe bounds."""
     try:
-        scale_ratio = tensor.scale / tensor.context().global_scale
-        if scale_ratio > 100:  # Scale too large
+        scale_ratio = tensor.scale() / tensor.context().global_scale
+        if scale_ratio > 10:  # Scale too large - reduced from 100 for earlier detection
             print(
                 f"Warning: {operation_name} - Scale too large: {scale_ratio:.2f}x global scale"
             )
             return False
-        elif scale_ratio < 0.01:  # Scale too small
+        elif scale_ratio < 0.1:  # Scale too small - increased from 0.01 for earlier detection
             print(
                 f"Warning: {operation_name} - Scale too small: {scale_ratio:.4f}x global scale"
             )
             return False
+        elif scale_ratio > 5:  # Warn earlier but don't fail
+            print(
+                f"Info: {operation_name} - Scale getting large: {scale_ratio:.2f}x global scale"
+            )
         return True
-    except:
+    except Exception as e:
+        print(f"Error checking scale health: {e}")
         return False
 
 
@@ -105,7 +133,7 @@ def bootstrap_if_needed(
         if hasattr(tensor, "scale") and hasattr(tensor, "context"):
             try:
                 context = tensor.context()
-                scale_ratio = tensor.scale / context.global_scale
+                scale_ratio = tensor.scale() / context.global_scale
                 if scale_ratio < min_scale_ratio:
                     print(
                         f"Bootstrapping tensor (scale ratio: {scale_ratio:.4f})"

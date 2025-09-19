@@ -1,6 +1,8 @@
 import argparse
 import json
+import logging
 import os
+import sys
 import time
 from datetime import datetime
 
@@ -10,6 +12,18 @@ from inference import ProductionFHEInference, SecureInferenceServer
 from model import FHEMLPClassifier
 from training import train_production_fhe_model
 from utils import create_context, load_mnist_data
+
+# Configure logging
+log_filename = f'main_training_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(log_filename),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
 
 
 def save_production_model(
@@ -227,6 +241,10 @@ def test_production_inference(
 
 
 def main():
+    logger.info("Starting FHE training system")
+    logger.info(f"Python version: {sys.version}")
+    logger.info(f"Log file: {log_filename}")
+
     parser = argparse.ArgumentParser(
         description="Production FHE Training - No Plaintext Access"
     )
@@ -236,8 +254,8 @@ def main():
         "--hidden-dims",
         type=int,
         nargs="+",
-        default=[32],
-        help="Hidden layer dimensions (smaller for FHE)",
+        default=[256, 128, 64],
+        help="Hidden layer dimensions (deep architecture for high accuracy)",
     )
     parser.add_argument(
         "--use-polynomial-activation",
@@ -336,7 +354,7 @@ def main():
         use_polynomial_activation=args.use_polynomial_activation,
     )
 
-    # Production training - entirely on encrypted data
+    # Production training - entirely on encrypted data with memory management
     model, training_history = train_production_fhe_model(
         model=model,
         context=context,
@@ -347,6 +365,7 @@ def main():
         max_train_samples=args.max_train_samples,
         max_test_samples=args.max_test_samples,
         batch_size=args.batch_size,
+        memory_limit_gb=25.0,  # 25GB memory limit - conservative for stable FHE operations
     )
 
     # Save model if requested

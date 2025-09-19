@@ -1,4 +1,6 @@
+import logging
 import time
+from datetime import datetime
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -17,6 +19,18 @@ from utils import (
     safe_rescale,
     safe_square,
 )
+from memory_manager import GracefulMemoryManager, memory_aware, AdaptiveTrainingManager
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(f'fhe_training_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 
 class ProductionFHETrainer:
@@ -41,32 +55,54 @@ class ProductionFHETrainer:
 
         # Initialize encrypted parameter gradients storage
         self.encrypted_gradients = None
-        self._initialize_encrypted_gradients()
+
+        logger.info(f"Initializing ProductionFHETrainer with LR: {learning_rate}")
+        logger.info(f"FHE Context - Scale: {context.global_scale}")
+
+        try:
+            self._initialize_encrypted_gradients()
+            logger.info("Successfully initialized encrypted gradients")
+        except Exception as e:
+            logger.error(f"Failed to initialize encrypted gradients: {e}")
+            raise
 
     def _initialize_encrypted_gradients(self):
         """Initialize encrypted gradient storage for each parameter."""
+        logger.info(f"Initializing encrypted gradients for {len(self.model.layers)} layers")
         self.encrypted_gradients = []
-        for layer in self.model.layers:
-            # Initialize encrypted zero gradients for weights and biases
-            weight_grad_zeros = torch.zeros_like(layer.weight)
-            bias_grad_zeros = torch.zeros_like(layer.bias)
 
-            # Encrypt the zero gradients
-            encrypted_weight_grad = encrypt_tensor(
-                self.context, weight_grad_zeros.flatten()
-            )
-            encrypted_bias_grad = encrypt_tensor(
-                self.context, bias_grad_zeros.flatten()
-            )
+        for i, layer in enumerate(self.model.layers):
+            try:
+                logger.debug(f"Layer {i}: weight shape {layer.weight.shape}, bias shape {layer.bias.shape}")
 
-            self.encrypted_gradients.append(
-                {
-                    "weight": encrypted_weight_grad,
-                    "bias": encrypted_bias_grad,
-                    "weight_shape": layer.weight.shape,
-                    "bias_shape": layer.bias.shape,
-                }
-            )
+                # Initialize encrypted zero gradients for weights and biases
+                weight_grad_zeros = torch.zeros_like(layer.weight)
+                bias_grad_zeros = torch.zeros_like(layer.bias)
+
+                # Encrypt the zero gradients
+                encrypted_weight_grad = encrypt_tensor(
+                    self.context, weight_grad_zeros.flatten()
+                )
+                encrypted_bias_grad = encrypt_tensor(
+                    self.context, bias_grad_zeros.flatten()
+                )
+
+                logger.debug(f"Layer {i}: successfully encrypted gradients")
+
+                self.encrypted_gradients.append(
+                    {
+                        "weight": encrypted_weight_grad,
+                        "bias": encrypted_bias_grad,
+                        "weight_shape": layer.weight.shape,
+                        "bias_shape": layer.bias.shape,
+                    }
+                )
+
+            except Exception as e:
+                logger.error(f"Failed to initialize gradients for layer {i}: {e}")
+                raise
+
+        logger.info(f"Successfully initialized {len(self.encrypted_gradients)} gradient sets")
 
     def _compute_encrypted_loss(
         self, encrypted_output: ts.CKKSTensor, encrypted_target: ts.CKKSTensor
@@ -77,26 +113,43 @@ class ProductionFHETrainer:
         This reduces multiplicative depth and avoids scale issues.
         Loss = |output - target|  (approximated)
         """
-        # Check scale health before operations
-        check_scale_health(encrypted_output, "loss_input_output")
-        check_scale_health(encrypted_target, "loss_input_target")
+        logger.debug("Computing encrypted loss")
 
-        # Compute difference: output - target
-        diff = encrypted_output - encrypted_target
+        try:
+            # Check scale health before operations
+            output_healthy = check_scale_health(encrypted_output, "loss_input_output")
+            target_healthy = check_scale_health(encrypted_target, "loss_input_target")
 
-        # Apply safe rescaling to difference
-        diff = safe_rescale(diff)
-        check_scale_health(diff, "loss_diff")
+            if not output_healthy or not target_healthy:
+                logger.warning("Scale health issues detected in loss computation inputs")
 
-        # Instead of squaring, use the difference directly
-        # This avoids the multiplicative depth that causes scale issues
-        # In practice, this approximates absolute loss
-        loss = diff
+            # Compute difference: output - target
+            diff = encrypted_output - encrypted_target
+            logger.debug("Computed output-target difference")
 
-        # Final scale check
-        check_scale_health(loss, "loss_final")
+            # Apply safe rescaling to difference
+            diff = safe_rescale(diff)
+            diff_healthy = check_scale_health(diff, "loss_diff")
 
-        return loss
+            if not diff_healthy:
+                logger.warning("Scale issues in loss difference")
+
+            # Instead of squaring, use the difference directly
+            # This avoids the multiplicative depth that causes scale issues
+            # In practice, this approximates absolute loss
+            loss = diff
+
+            # Final scale check
+            loss_healthy = check_scale_health(loss, "loss_final")
+            if not loss_healthy:
+                logger.warning("Final loss has scale issues")
+
+            logger.debug("Successfully computed encrypted loss")
+            return loss
+
+        except Exception as e:
+            logger.error(f"Error in encrypted loss computation: {e}")
+            raise
 
     def _compute_encrypted_gradients(
         self,
@@ -196,32 +249,56 @@ class ProductionFHETrainer:
         Returns:
             Approximate loss value (decrypted for monitoring only)
         """
+        logger.debug(f"Training on encrypted batch of size {len(encrypted_images)}")
         total_loss = 0.0
+        processed_samples = 0
 
-        for enc_img, enc_label in zip(encrypted_images, encrypted_labels):
-            # Forward pass entirely in encrypted space
-            encrypted_output = self.model.forward_encrypted(enc_img)
+        for i, (enc_img, enc_label) in enumerate(zip(encrypted_images, encrypted_labels)):
+            try:
+                logger.debug(f"Processing sample {i+1}/{len(encrypted_images)}")
 
-            # Compute loss entirely in encrypted space
-            encrypted_loss = self._compute_encrypted_loss(
-                encrypted_output, enc_label
-            )
+                # Forward pass entirely in encrypted space
+                encrypted_output = self.model.forward_encrypted(enc_img)
+                logger.debug(f"Forward pass completed for sample {i+1}")
 
-            # Compute gradients entirely in encrypted space
-            self._compute_encrypted_gradients(
-                enc_img, encrypted_output, enc_label
-            )
+                # Compute loss entirely in encrypted space
+                encrypted_loss = self._compute_encrypted_loss(
+                    encrypted_output, enc_label
+                )
+                logger.debug(f"Loss computed for sample {i+1}")
 
-            # Update parameters
-            self._update_encrypted_parameters()
+                # Compute gradients entirely in encrypted space
+                self._compute_encrypted_gradients(
+                    enc_img, encrypted_output, enc_label
+                )
+                logger.debug(f"Gradients computed for sample {i+1}")
 
-            # Decrypt only the loss for monitoring (minimal information leakage)
-            loss_value = decrypt_tensor(encrypted_loss)
-            if loss_value.numel() > 1:
-                loss_value = loss_value.mean()
-            total_loss += loss_value.item()
+                # Update parameters
+                self._update_encrypted_parameters()
+                logger.debug(f"Parameters updated for sample {i+1}")
 
-        return total_loss / len(encrypted_images)
+                # Decrypt only the loss for monitoring (minimal information leakage)
+                loss_value = decrypt_tensor(encrypted_loss)
+                if loss_value.numel() > 1:
+                    loss_value = loss_value.mean()
+                loss_item = loss_value.item()
+                total_loss += loss_item
+                processed_samples += 1
+
+                logger.debug(f"Sample {i+1} loss: {loss_item:.6f}")
+
+            except Exception as e:
+                logger.error(f"Error processing sample {i+1}: {e}")
+                # Continue with next sample instead of failing entirely
+                continue
+
+        if processed_samples == 0:
+            logger.error("No samples were successfully processed")
+            return float('inf')
+
+        avg_loss = total_loss / processed_samples
+        logger.info(f"Batch training complete. Avg loss: {avg_loss:.6f}, Processed: {processed_samples}/{len(encrypted_images)}")
+        return avg_loss
 
     def evaluate_encrypted(
         self,
@@ -328,27 +405,47 @@ def train_production_fhe_model(
     max_train_samples: int = 100,
     max_test_samples: int = 20,
     batch_size: int = 4,
+    memory_limit_gb: float = 25.0,
 ):
-    """Train a model entirely on encrypted data for production deployment.
+    """Train a model entirely on encrypted data with graceful memory management.
 
     This function demonstrates how to train FHE models without ever accessing
-    plaintext data, suitable for scenarios with extremely sensitive data.
+    plaintext data, with automatic memory management to prevent system crashes.
     """
     print("=" * 60)
-    print("PRODUCTION FHE TRAINING - NO PLAINTEXT ACCESS")
+    print("PRODUCTION FHE TRAINING - MEMORY-MANAGED")
     print("=" * 60)
+
+    # Initialize adaptive memory management
+    adaptive_manager = AdaptiveTrainingManager(memory_limit_gb)
+    adaptive_manager.monitor_and_log_memory("Training Start")
 
     # Initialize production trainer
     trainer = ProductionFHETrainer(model, context, learning_rate)
 
+    # Adapt parameters based on initial memory usage
+    adapted_params = adaptive_manager.adapt_parameters()
+    actual_max_train_samples = adapted_params.get("max_train_samples", max_train_samples)
+    actual_max_test_samples = adapted_params.get("max_test_samples", max_test_samples)
+    actual_batch_size = adapted_params.get("batch_size", batch_size)
+
+    print(f"\nAdapted parameters based on memory:")
+    print(f"  Train samples: {max_train_samples} -> {actual_max_train_samples}")
+    print(f"  Test samples: {max_test_samples} -> {actual_max_test_samples}")
+    print(f"  Batch size: {batch_size} -> {actual_batch_size}")
+
     # Create secure data loaders that encrypt on-the-fly
     print(f"\nCreating secure data loaders...")
+    adaptive_manager.monitor_and_log_memory("Before Data Loading")
+
     secure_train_loader = SecureDataLoader(
-        context, train_dataloader, max_train_samples
+        context, train_dataloader, actual_max_train_samples
     )
     secure_test_loader = SecureDataLoader(
-        context, test_dataloader, max_test_samples
+        context, test_dataloader, actual_max_test_samples
     )
+
+    adaptive_manager.monitor_and_log_memory("After Data Loading")
 
     training_history = {
         "train_loss": [],
